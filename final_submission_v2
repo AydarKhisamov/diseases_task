@@ -1,0 +1,183 @@
+from google.colab import drive
+drive.mount('/content/drive')
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from tensorflow import keras
+from keras import Model, Input
+from keras import layers as L
+from sklearn.metrics import r2_score
+
+train_part = pd.read_csv('/content/drive/MyDrive/diseases_task/train_part.csv', sep=';',
+                         dtype={'PATIENT_SEX':str, 
+                                'MKB_CODE':str, 
+                                'ADRES':str, 
+                                'VISIT_MONTH_YEAR':str, 
+                                'AGE_CATEGORY':str, 
+                                'PATIENT_ID_COUNT':int})
+test_part = pd.read_csv('/content/drive/MyDrive/diseases_task/test_part.csv', sep=';',
+                         dtype={'PATIENT_SEX':str, 
+                                'MKB_CODE':str, 
+                                'ADRES':str, 
+                                'VISIT_MONTH_YEAR':str, 
+                                'AGE_CATEGORY':str})
+
+dataset = pd.concat([train_part, test_part])
+del train_part
+
+dataset.rename(columns={'VISIT_MONTH_YEAR':'PERIOD'}, inplace=True)
+
+# converting 'visit_month_year' column to datetime
+dataset['PERIOD'] = pd.to_datetime(dataset['PERIOD'], format='%m.%y')
+all_timestamps = sorted(dataset['PERIOD'].unique())
+
+# keeping samples having combo of address, disease code, sex, age category and target date only
+dataset = dataset.groupby(dataset.columns[:-1].tolist()).PATIENT_ID_COUNT.sum()
+dataset = dataset.reset_index(level='PERIOD')
+dataset = dataset.loc[dataset[dataset['PERIOD']==all_timestamps[-1]].index]
+dataset.reset_index(inplace=True)
+
+# constructing timeseries with equal periods for each combo of address, disease code, sex, age category 
+# and filling NA values by 0
+dataset = dataset.groupby(dataset.columns[:-1].tolist()) \
+                 .PATIENT_ID_COUNT.sum().unstack().fillna(0).stack()
+dataset = dataset.reset_index(name='PATIENT_ID_COUNT')
+
+# adding the column of patients counts in diffentiated form
+dataset['PATIENT_ID_COUNT_DIFF'] = np.array(dataset.groupby(dataset.columns[:-2].tolist()) \
+                                                   .apply(lambda x: x.PATIENT_ID_COUNT.diff()))
+
+# adding the column containing patients count for previous month
+dataset['PATIENT_ID_COUNT_PREV'] = dataset['PATIENT_ID_COUNT'].shift(1)
+
+# dropping the first observation for each combo of features cause it has no info of previous month
+dataset.drop(index=
+             dataset[dataset['PERIOD']==all_timestamps[0]].index.tolist(),
+             inplace=True)
+
+# adding the column of standardized differentiated patients count
+dataset['PATIENT_ID_COUNT_DIFF_STD'] = dataset.groupby(dataset.columns[:4].tolist()) \
+                                                      ['PATIENT_ID_COUNT_DIFF'] \
+                                                      .apply(lambda x: (x-x.mean()) / x.std())
+
+# standardized differentiated patients count is NA in groups which contains 0s only in patients count column
+# filling NA values in that column
+dataset['PATIENT_ID_COUNT_DIFF_STD'].fillna(value=0, inplace=True)
+
+normality_low_limit = dataset[dataset['PERIOD'].isin(all_timestamps[-3:])] \
+                      .PATIENT_ID_COUNT_DIFF_STD.min()
+normality_high_limit = dataset[dataset['PERIOD'].isin(all_timestamps[-3:])] \
+                       .PATIENT_ID_COUNT_DIFF_STD.max()
+
+# in this code snippet is 2 conditions:
+# second one is located on 3rd and 4th lines and selects samples having standardized differentiated patients count outside of 
+# [normality_low_limit:normality_high_limit], and as a consequence detected as anomaly
+# first one is located on 2nd line and selects samples with date NOT AT last three months because they will be used in test set preparing further
+# in the end data on columns PATIENT_ID_COUNT_DIFF, PATIENT_ID_COUNT_PREV of sample which contains differentiated patients count detected as anomaly is 
+# replaced by NA value
+dataset.loc[
+            dataset[(~dataset['PERIOD'].isin(all_timestamps[-3:])) &
+                    ((dataset['PATIENT_ID_COUNT_DIFF_STD'] <= normality_low_limit) |
+                     (dataset['PATIENT_ID_COUNT_DIFF_STD'] >= normality_high_limit))].index,
+            ['PATIENT_ID_COUNT_DIFF', 'PATIENT_ID_COUNT_PREV']
+           ] = np.nan
+
+dataset.drop(columns=['PATIENT_ID_COUNT_DIFF_STD', 'PATIENT_ID_COUNT_DIFF'], inplace=True)
+
+# preparing the dicts to encode categorical data from ADRES, MKB_CODE, PATIENT_SEX, AGE_CATEGORY columns
+for col in ['ADRES', 'MKB_CODE', 'PATIENT_SEX', 'AGE_CATEGORY']:
+	keys = sorted(dataset[col].unique())
+	nums = range(len(keys))
+	exec('{}_encoded = dict(zip(keys, nums))'.format(col))
+
+# replacing categorical means with encoded means
+for col in ['ADRES', 'MKB_CODE', 'PATIENT_SEX', 'AGE_CATEGORY']:
+	exec('dataset["{}_encoded"] = dataset["{}"].apply(lambda x: {}_encoded[x])'.format(col, col, col))
+
+# adding the column ('array') where all features as numpy array
+# the array shape in that column is (3, 5) because it contains 5 values of each feature for 3 last months till the date on column 'PERIOD'
+features = ['PATIENT_SEX_encoded', 'MKB_CODE_encoded', 'ADRES_encoded', 'AGE_CATEGORY_encoded', 'PATIENT_ID_COUNT_PREV']
+
+for col in ['X_shift2', 'X_shift1', 'X']:
+	exec('dataset["{}"] = dataset[features].apply(lambda x: np.nan if any(x.isna().values) \
+	                                                        else x.values, axis=1)'.format(col))
+
+dataset['X_shift2'] = dataset['X_shift2'].shift(2)
+dataset['X_shift1'] = dataset['X_shift1'].shift(1)
+
+dataset[dataset['PERIOD'].isin(all_timestamps[1:3])].X_shift2 = np.nan
+dataset[dataset['PERIOD']==all_timestamps[1]].X_shift1 = np.nan
+dataset['array'] = dataset[['X_shift2', 'X_shift1', 'X']] \
+                           .apply(lambda x: np.nan if any(x.isna().values)  
+                                            else np.concatenate([x['X_shift2'],
+                                                                 x['X_shift1'],
+                                                                 x['X']]) \
+                                                               .reshape(3, 5),
+                                  axis=1)
+
+dataset.drop(columns=['X_shift2', 'X_shift1', 'X'], inplace=True)
+dataset.dropna(inplace=True)
+dataset.reset_index(drop=True, inplace=True)
+
+train_idxs, val_idxs = train_test_split(dataset[dataset['PERIOD']!=all_timestamps[-1]].index.tolist(),
+                                        test_size=0.2,
+                                        random_state=1)
+test_idxs = dataset[dataset['PERIOD']==all_timestamps[-1]].index.tolist()
+
+train_len = len(train_idxs)
+train_data = np.stack(np.concatenate(dataset.loc[train_idxs, ['array']].values))
+train_labels = dataset.loc[train_idxs, ['PATIENT_ID_COUNT']].values
+
+val_len = len(val_idxs)
+val_data = np.stack(np.concatenate(dataset.loc[val_idxs, ['array']].values))
+val_labels = dataset.loc[val_idxs, ['PATIENT_ID_COUNT']].values
+
+test_len = len(train_idxs)
+test_data = np.stack(np.concatenate(dataset.loc[test_idxs, ['array']].values))
+
+inputs = Input(shape=(train_data.shape[1], train_data.shape[2]))
+x = L.LSTM(1024)(inputs)
+outputs = L.Dense(1, activation='relu')(x)
+model = Model(inputs=inputs, outputs=outputs)
+
+model.compile(optimizer=keras.optimizers.Adam(),
+              loss='mse')
+
+model_path = '/content/drive/MyDrive/diseases_task/models'
+
+def train_model(model, max_epochs=30, patience=5):
+	best_r2 = 0
+	patience_counter = 0
+	for epoch in range(1, max_epochs+1):
+		model.fit(train_data, 
+		          train_labels,
+		          epochs=1,
+		          verbose=2)
+		r2 = r2_score(val_labels, model.predict(val_data))
+		if r2 > best_r2:
+			best_r2 = r2
+			patience_counter = 0
+			exec("print('Epoch {} is finished. Best r2 improved to {}')".format(epoch, ('%.2f' % best_r2)))
+			print('Saving model...')
+			model.save(model_path, 
+			           save_format='tf',
+			           save_traces=False)
+		else:
+			patience_counter += 1
+			exec("print('Epoch {} is finished. Current r2 = {}. Best r2 = {}. Patience counter is {} of {}')"
+			     .format(epoch, ('%.2f' % r2), ('%.2f' % best_r2), patience_counter, patience))
+		if patience_counter == patience:
+			break
+
+train_model(model)
+                
+model = keras.models.load_model(model_path)
+
+predictions = model.predict(test_data)
+dataset.loc[test_idxs, ['PATIENT_ID_COUNT']] = predictions
+final_submission = test_part.merge(dataset.loc[test_idxs, ['PATIENT_SEX', 'MKB_CODE', 'ADRES', 'AGE_CATEGORY', 'PATIENT_ID_COUNT']], 
+                                   how='left', 
+                                   on=['PATIENT_SEX', 'MKB_CODE', 'ADRES', 'AGE_CATEGORY'])
+final_submission['PATIENT_ID_COUNT'] = final_submission['PATIENT_ID_COUNT'].round()
+final_submission['PATIENT_ID_COUNT'] = final_submission['PATIENT_ID_COUNT'].astype(int) 
+final_submission.to_csv('/content/drive/MyDrive/diseases_task/final_submission_v3.csv', sep=';', index=None)
