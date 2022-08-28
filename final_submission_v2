@@ -149,6 +149,10 @@ model.compile(optimizer=keras.optimizers.Adam(),
 
 model_path = '/content/drive/MyDrive/diseases_task/models'
 
+# stepwise model training 
+# chosen metric is R^2
+# each improvement of metric leads to model saving
+# patience is early stop parameter; is quantity of epochs with no improvement of metric
 def train_model(model, max_epochs=30, patience=5):
 	best_r2 = 0
 	patience_counter = 0
