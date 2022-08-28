@@ -64,6 +64,7 @@ dataset['PATIENT_ID_COUNT_DIFF_STD'] = dataset.groupby(dataset.columns[:4].tolis
 # filling NA values in that column
 dataset['PATIENT_ID_COUNT_DIFF_STD'].fillna(value=0, inplace=True)
 
+# normality limits are based on statistics of standard deviation in test_data and means outside of that limits are detected as anomaly in train_ and val_data
 normality_low_limit = dataset[dataset['PERIOD'].isin(all_timestamps[-3:])] \
                       .PATIENT_ID_COUNT_DIFF_STD.min()
 normality_high_limit = dataset[dataset['PERIOD'].isin(all_timestamps[-3:])] \
@@ -98,13 +99,16 @@ for col in ['ADRES', 'MKB_CODE', 'PATIENT_SEX', 'AGE_CATEGORY']:
 # the array shape in that column is (3, 5) because it contains 5 values of each feature for 3 last months till the date on column 'PERIOD'
 features = ['PATIENT_SEX_encoded', 'MKB_CODE_encoded', 'ADRES_encoded', 'AGE_CATEGORY_encoded', 'PATIENT_ID_COUNT_PREV']
 
+# transforming data to arrays and marking NA values
 for col in ['X_shift2', 'X_shift1', 'X']:
 	exec('dataset["{}"] = dataset[features].apply(lambda x: np.nan if any(x.isna().values) \
 	                                                        else x.values, axis=1)'.format(col))
-
+# array from X_shift2 will be used as data for the current month, array from X_shift1 as data for the last month, array from X as data for two months ago
 dataset['X_shift2'] = dataset['X_shift2'].shift(2)
 dataset['X_shift1'] = dataset['X_shift1'].shift(1)
 
+# concatenating arrays to the main array containing consecutive data for three months
+# shape (3, 5) = (timesteps, len(features))
 dataset[dataset['PERIOD'].isin(all_timestamps[1:3])].X_shift2 = np.nan
 dataset[dataset['PERIOD']==all_timestamps[1]].X_shift1 = np.nan
 dataset['array'] = dataset[['X_shift2', 'X_shift1', 'X']] \
@@ -158,7 +162,7 @@ def train_model(model, max_epochs=30, patience=5):
 			best_r2 = r2
 			patience_counter = 0
 			exec("print('Epoch {} is finished. Best r2 improved to {}')".format(epoch, ('%.2f' % best_r2)))
-			print('Saving model...')
+			print('Saving the model...')
 			model.save(model_path, 
 			           save_format='tf',
 			           save_traces=False)
@@ -166,7 +170,8 @@ def train_model(model, max_epochs=30, patience=5):
 			patience_counter += 1
 			exec("print('Epoch {} is finished. Current r2 = {}. Best r2 = {}. Patience counter is {} of {}')"
 			     .format(epoch, ('%.2f' % r2), ('%.2f' % best_r2), patience_counter, patience))
-		if patience_counter == patience:
+		if (patience_counter == patience) | (epoch == max_epochs):
+			print("Model training is finished")
 			break
 
 train_model(model)
@@ -180,4 +185,4 @@ final_submission = test_part.merge(dataset.loc[test_idxs, ['PATIENT_SEX', 'MKB_C
                                    on=['PATIENT_SEX', 'MKB_CODE', 'ADRES', 'AGE_CATEGORY'])
 final_submission['PATIENT_ID_COUNT'] = final_submission['PATIENT_ID_COUNT'].round()
 final_submission['PATIENT_ID_COUNT'] = final_submission['PATIENT_ID_COUNT'].astype(int) 
-final_submission.to_csv('/content/drive/MyDrive/diseases_task/final_submission_v3.csv', sep=';', index=None)
+final_submission.to_csv('/content/drive/MyDrive/diseases_task/final_submission_v2.csv', sep=';', index=None)
