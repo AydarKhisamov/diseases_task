@@ -141,7 +141,7 @@ test_data = np.stack(np.concatenate(dataset.loc[test_idxs, ['array']].values))
 
 inputs = Input(shape=(train_data.shape[1], train_data.shape[2]))
 x = L.LSTM(1024)(inputs)
-outputs = L.Dense(1, activation='relu')(x)
+outputs = L.Dense(1)(x)
 model = Model(inputs=inputs, outputs=outputs)
 
 model.compile(optimizer=keras.optimizers.Adam(),
