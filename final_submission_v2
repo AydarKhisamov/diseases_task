@@ -64,7 +64,8 @@ dataset['PATIENT_ID_COUNT_DIFF_STD'] = dataset.groupby(dataset.columns[:4].tolis
 # filling NA values in that column
 dataset['PATIENT_ID_COUNT_DIFF_STD'].fillna(value=0, inplace=True)
 
-# normality limits are based on statistics of standard deviation in test_data and means outside of that limits are detected as anomaly in train_ and val_data
+# normality limits are based on statistics of standard deviation in test_data and means which are outside of that limits are detected as anomaly in train_ and 
+# val_data
 normality_low_limit = dataset[dataset['PERIOD'].isin(all_timestamps[-3:])] \
                       .PATIENT_ID_COUNT_DIFF_STD.min()
 normality_high_limit = dataset[dataset['PERIOD'].isin(all_timestamps[-3:])] \
